@@ -6,6 +6,14 @@
 
 ![Normalized Election Turnout](Normalized-Turnout.PNG)
 
+Advantages of Normalized Turnout by Age
+
+* Ratios > 1 show age ranges with turnout better than overall turnout
+
+* Ratios < 1 show age ranges with turnout worse than overall turnout
+
+* Turnout curves can be compared among state, counties, and precincts.
+
 ## Kansas
 
 PowerPoints

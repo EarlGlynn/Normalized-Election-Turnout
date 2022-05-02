@@ -1,0 +1,292 @@
+---
+title:  "Driver to Create County Turnout Reports"
+author: "Earl F Glynn"
+date: "<small>`r Sys.Date()`</small>"
+output:
+  html_document:
+    theme: cerulean
+    toc: yes
+    toc_depth:  3
+    toc_float:
+      collapsed:  yes
+      smooth_scroll: yes
+    number_sections: yes
+    code_folding:  show
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r Dsetup, echo = FALSE}
+# http://biostat.mc.vanderbilt.edu/wiki/Main/KnitrHtmlTemplate
+require(Hmisc)    # provides knitrSet and other functions
+knitrSet(lang = 'markdown',   # If using blogdown: knitrSet(lang='blogdown')
+         fig.align = 'left',
+         w = 6.5,
+         h = 4.5,
+         cache = FALSE)
+```
+
+`r hidingTOC(buttonLabel = "Outline")`
+
+```{r Dsetup2, include = FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  comment    = NA)
+
+time.1 <- Sys.time()
+```
+
+# Setup {.tabset .tabset-fade .tabset-pills}
+
+##  {.active}
+
+## Constants
+
+```{r DConstants}
+EXCEL_LIMIT <- 2^20
+```
+
+## Packages
+
+```{r DPackages}
+library(rmarkdown)
+library(tidyverse)
+library(lubridate)
+
+library(readxl)
+library(kableExtra) 
+
+library(foreach)
+library(parallel)
+library(doParallel)       
+```
+
+
+## Helper Functions
+
+```{r DHelper}
+Show <- function(data, caption="", bigMark="", ...)
+{
+  data                                                    %>%
+  kable("html", 
+        caption = caption,
+        format.args = list(big.mark = bigMark))   %>%
+  kable_styling(bootstrap_options = c("striped", "bordered", "condensed"),
+                position = "left", 
+                full_width = FALSE, ...)
+}
+```
+
+Read `efg`s "standardized" preprocessed version of the voter file from the Kansas Secretary of State.
+
+```{r DReadVoterFileFunction}
+readVoterFile <- function(Filename, ELECTION_DATE)
+{
+  voterFile <-
+  read_csv(Filename, guess_max = EXCEL_LIMIT) %>%
+  select(
+          ID14,                   # Hash of County, Name, DOB, Gender
+          SOSKey,
+          Status,
+          BirthDate,
+          RegisterDate,
+          Gender,
+          County, City,
+          Precinct1 = Precinct,
+          Precinct2,
+          Party,                 # D, R, L, U, ?
+          LastVoteYear,
+          TotalVotes,            # Number of ballots in  voting history (max is 10)
+          August,                # Number of August ballots cast in even years
+          AugPattern,            # Right most "X" is for August 2020 Primary
+          November,              # Number of November ballots cast in even years
+          NovPattern             # Right most "X" is for November 2020 General
+        )             %>%
+  mutate(Gender       = recode(Gender,
+                               "F"      = "Female",
+                               "M"      = "Male",
+                               "?"      = "Unknown",
+                               .missing = "Unknown"),
+         Party        = recode(Party,
+                               "?"      = "U",
+                               .missing = "U"),
+         Precinct     = paste0(Precinct1, " - ", Precinct2),
+         BirthDate    = as.Date(BirthDate,    "%m/%d/%Y"),
+         RegisterDate = as.Date(RegisterDate, "%m/%d/%Y"),
+         Age          = round((BirthDate %--% as.Date(ELECTION_DATE)) /
+                              years(1)),
+         Registered   = (RegisterDate %--% as.Date(ELECTION_DATE)) /
+                         years(1),
+         RegisteredTooLate = as.integer(
+                                         as.Date(RegisterDate, "%m/%d/%Y") >
+                                         (as.Date(ELECTION_DATE) - 21)
+                                       )                       
+        )             %>%
+    select(-Precinct1, - Precinct2)
+
+  invisible(voterFile)
+}
+```
+
+# Metadata
+
+```{r DShow}
+metadata <- read_xlsx("../Statewide/Statewide-Elections.xlsx")
+nrow(metadata)
+```
+
+Process only one
+
+```{r DSelectOne}
+info <- metadata %>% slice(7)
+info  %>% Show()
+```                              
+
+# Parameters
+
+Use first publicly available voter list after a general election whenever possible.
+
+```{r DParms}
+PRECINCT_MINIMUM_VOTERS <-  25
+```
+
+# Read Kansas Data
+
+```{r DReadVoterFile}
+afterFilename <- paste0("E:/Data/Kansas/RawData/",
+                        str_sub(info$ELECTION_DATE, 1, 3), "0s/",     #####
+                        str_sub(info$AFTER_FILE_DATE, 1, 4), "/",
+                        info$AFTER_FILE_DATE, "/KSCVRID.CSV")
+VOTER_MASTER <- readVoterFile(afterFilename, info$ELECTION_DATE)  
+```
+
+
+```{r DAddVited}
+if (info$ELECTION_NAME == "Primary")
+{
+  VOTER_MASTER <-
+    VOTER_MASTER %>%
+    mutate(
+            VotedInElection =
+              as.integer(substr(AugPattern, info$HISTORY_INDEX, info$HISTORY_INDEX) == "X")
+          )
+}
+
+if (info$ELECTION_NAME == "General")
+{
+  VOTER_MASTER <-
+    VOTER_MASTER %>%
+    mutate(
+            VotedInElection =
+              as.integer(substr(NovPattern, info$HISTORY_INDEX, info$HISTORY_INDEX) == "X")
+          )
+}
+```                                 
+
+```{r DSummary}
+VOTER_MASTER %>%
+  summarize(
+             n         = n(),
+             nID14     = n_distinct(ID14),
+             nSOSKey   = n_distinct(SOSKey),
+             nVoted    = sum(VotedInElection, na.rm = TRUE),
+             nParty    = n_distinct(Party),
+             nGender   = n_distinct(Gender),
+             nCounty   = n_distinct(County),
+             nPrecinct = n_distinct(Precinct),
+             minAge    = min(Age, na.rm = TRUE),
+             maxAge    = max(Age, na.rm = TRUE)
+            )  %>%
+  Show(bigMark = ",")
+```
+
+```{r DCounties}
+counties <- sort(unique(VOTER_MASTER$County))
+length(counties)
+```
+
+# Function to Process Single County
+
+```{r DProcessCounty}
+processCounty <- function(county, info, VOTER_MASTER)
+{
+  title <- paste0("Normalized Turnout for ",
+                  county, " County, KS in ",
+                  info$ELECTION_NAME, " Election ",
+                  info$ELECTION_DATE)     
+  
+  OUTPUT_DIR <- paste0("./", info$ELECTION_DATE, "/", county)      
+
+  rmarkdown::render(
+                     "County-Normalized-Turnout-Template.Rmd",
+                     output_format = html_document(theme      = "cerulean",
+                                                   toc        = TRUE,
+                                                   toc_format = TRUE,
+                                                   toc_float  = TRUE,
+                                                   number_sections = TRUE,
+                                                   code_folding = "hide"),   
+
+                     output_file = paste0(info$ELECTION_DATE, "-", county, "-County.html"),
+                     output_dir  = OUTPUT_DIR,
+
+                     quiet  = TRUE,
+                     params = list(
+                                    ReportTitle     = title,
+                                    District        = "County",
+                                    DistrictName    = county,
+                                    ElectionDate    = info$ELECTION_DATE,
+                                    ElectionName    = info$ELECTION_NAME,
+                                    AfterFileDate   = info$AFTER_FILE_DATE,
+                                    PrecinctMinimum = PRECINCT_MINIMUM_VOTERS,
+                                    voterMaster     = VOTER_MASTER
+                                  )
+                   )
+
+  # Add election date and county name to all graphics files
+  listFiles <- dir(path = ".",  pattern = "^.*\\.png$|Too.*\\.xlsx$")    
+  newNames <- paste0(info$ELECTION_DATE, "-", county, "-", listFiles)
+  file.rename(listFiles, newNames)
+
+  #Brute force to get all files into `output_dir`
+  listFiles <- dir(path = ".", pattern = "^.*\\.png$|Too.*\\.xlsx$")           
+  file.copy(listFiles, OUTPUT_DIR, copy.date = TRUE)
+  file.remove(listFiles)   
+  
+  county
+}
+```
+
+# Process All Counties
+
+```{r DProcessAll}
+system.time(
+             for (county in counties)
+             { 
+               processCounty(county, info, VOTER_MASTER)
+             }
+           )
+```
+                          
+
+# Fini {.tabset .tabset-fade .tabset-pills}
+
+## {.active}
+
+## Session Info
+
+```{r Dsession}
+sessionInfo()
+```
+
+</div>
+
+```{r ThatsAllDriver, echo = FALSE}
+time.2 <- Sys.time()
+processingTime <- paste("Processing time:", sprintf("%.1f",
+                        as.numeric(difftime(time.2,
+                                            time.1, units="secs"))), "secs\n")
+```
+
+`r processingTime`
+`r format(time.2, "%Y-%m-%d %H%M")`
+

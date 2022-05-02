@@ -1,0 +1,452 @@
+---
+title: "Ohio Key and Polynomials"
+author: "Earl F Glynn<br>"
+date: "<small>`r Sys.Date()`</small>"
+output:
+  html_document:
+    theme: cerulean
+    toc: yes
+    toc_depth:  3
+    toc_float:
+      collapsed:  yes
+      smooth_scroll: yes
+    number_sections: yes
+    code_folding:  show
+---
+
+Analysis of data in file `key.json` from results in Jupyter notebook `Election-Integrity/Ohio/rlee32/Analysis/Ohio-Analysis-4-Generate-Key.html`
+
+```{r setup, echo = FALSE}
+# http://biostat.mc.vanderbilt.edu/wiki/Main/KnitrHtmlTemplate
+require(Hmisc)    # provides knitrSet and other functions
+knitrSet(lang = 'markdown',   # If using blogdown: knitrSet(lang='blogdown')
+         fig.align = 'left',
+         w = 6.5,
+         h = 4.5,
+         cache = FALSE)
+```
+
+`r hidingTOC(buttonLabel = "Outline")`
+
+```{r startYourEngines, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  comment = NA)
+
+time.1 <- Sys.time()
+```
+
+# Setup {.tabset .tabset-fade .tabset-pills}
+
+## {.active}
+
+## Constants
+
+```{r Constants}
+FILE_PREFIX   <- "x"    # no spaces
+```
+
+```{r}
+EXCEL_LIMIT <- 2^20
+```
+
+```{r}
+stamp <- paste("efg", format(time.1, "%Y-%m-%d %H%M"))
+```
+
+## Packages
+
+```{r Packages}
+library(tidyverse)
+```
+
+Display formatting
+
+```{r Display}
+library(kableExtra)  # kable_styling
+#library(IRdisplay)   # display_html (needed in Jupyter notebooks)
+```
+
+I/O
+
+```{r IO}
+library(readxl)      # read_xlsx
+library(readr)       # write_csv
+library(writexl)     # write_xlsx
+```
+
+```{r}
+library(RJSONIO)
+```
+
+ Graphics
+
+```{r Graphics}
+library(scales)      # comma, comma_format
+```
+
+## ggplot theme
+
+[ggplot Themes Gallery](https://www.datanovia.com/en/blog/ggplot-themes-gallery/)
+
+```{r ggplotTheme}
+theme_set(theme_minimal() +
+
+          theme(axis.text             = element_text(size = 10),
+                axis.title            = element_text(size = 14),
+
+                plot.caption          = element_text(hjust = c(0.0,1.0)),
+                plot.caption.position = "plot",   # R 4.0.0
+
+                plot.title.position   = "plot",
+                title                 = element_text(size = 14))
+           )
+
+COLOR_BAR     <- "skyblue"
+COLOR_OUTLINE <- "grey80"
+```
+
+## Helper functions
+
+```{r Helpers}
+Show <- function(data, caption="", bigMark="",
+                 height = NULL, width = NULL, ...)
+{
+  data                                       %>%
+  kable("html", caption=caption,
+        format.args=list(big.mark=bigMark))  %>%
+  kable_styling(bootstrap_options=c("striped", "bordered", "condensed"),
+                position="left",
+                full_width=FALSE, ...)       %>%
+  scroll_box(height = height, width = width) #  %>%
+# as.character()                             %>%      # Jupyter Only
+# display_html()                                      # Jupyter Only
+}
+```
+
+```{r}
+createPolynomialText <- function(coef)
+{
+  signs <- if_else(coef < 0, "-", "+")
+  if (signs[1] == "+") signs[1] <- ""
+  
+  xvar <- c("", rep("~italic(x)", length(coef)-1) )
+  numbers <- sprintf("%.4g", abs(coef))
+  
+  exponentSymbol <- c("", "", rep("^", length(coef)-2))
+  exponents <- c("", "", 2:(length(coef)-1))
+  
+  equation <- paste("italic(y) ==", 
+                    paste0(signs, " ", numbers, xvar, exponentSymbol, exponents, collapse = " "))
+  equation
+}
+```
+
+# Read `Key` data
+
+```{r}
+JSON <- fromJSON("key.json")
+
+keyRaw <- 
+  tibble(age = as.numeric( names(JSON) ),
+         keyValue = as.numeric(JSON))  %>%
+  arrange(age)
+
+dim(keyRaw)
+```
+
+Make sure there are no gaps in age
+
+```{r}
+table(diff(keyRaw$age))
+```
+
+Restrict to age 100 to match Dr. Frank's plot as closely as possible.
+
+```{r}
+keyRaw <-
+  keyRaw  %>%
+  filter(age <= 100)
+
+nrow(keyRaw)
+```
+
+# Ohio Normalized Voter Fraction by Age
+
+```{r OhioNormalized, fig.width = 8, fig.height = 6}
+TITLE <- "Ohio Normalized Voter Fraction by Age"
+
+normalizedVoted <-
+  ggplot(keyRaw, aes(age, y= keyValue))          +
+  geom_line(size = 2, color = "red")             +
+  scale_x_continuous(breaks = 0 + 0:11 * 10,
+                     limits = c(0, 110) )       +
+  scale_y_continuous(breaks = 0:7 * 0.2,
+                     limits = c(0, 1.40) )       +
+  labs(
+        title = TITLE,
+        x = "Election Day Age[years]",
+        y = "Normalized Fraction of Voters",
+        caption = c("Source:  Ohio Secretary of State, Voter File, 2022-03-25",
+                     stamp)
+      )                                          +
+  theme(title = element_text(size = 12),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank())                        
+
+print(normalizedVoted)
+```                   
+
+This plot of 83 numbers roughly matches the `Key` shown in the video of the presentation to the 
+Kansas House from 2022-01-20, which is shown below.
+
+# Dr. Frank's "OH Registration Key"
+
+AFAIK, a more exact comparison is not possible since Dr. Frank does not publish his "key" numbers, nor does he cite the date of the data he obtained from the Ohio Secretary of State.  
+
+The data I'm using is likely more than a year later than the data used by Dr. Frank.
+
+
+```{r, out.width="750px", echo=FALSE}
+knitr::include_graphics("Dr-Frank-OH-Registration-Key.png")
+```        
+
+# Polynomial Fits
+
+Dr. Frank uses polynomial regression in Excel to curve fit this data to a polynomial of degree 6.  Instead of a polynomial fit, he could have used the original vector of ~83 values by age in subsequent analysis, but he apparently wanted to say a "perfect fit" of a polynomial was the basis of an "algorithm" that explained results.  AFAIK,the coefficients of the polynomial have no easy interpretation. 
+
+In one video Dr. Frank uses Excel to show a "perfect" polynomial fit of degree 6 explains the data.  [I don't have that citation readily available.]
+
+Let explore how this polynomial might work, including exploring why degree 6 is the "best".  Generally, high degree polynomials cannot be used for extrapolation, but might be useful for interpolation, which is all that is need for this problem.
+
+```{r polyfitsMany, fig.width = 8, fig.height = 6}
+# se = FALSE:  suppress confidence intervals in plot since overlap
+
+ggplot(keyRaw, aes(age, keyValue))  + 
+  geom_point(size = 4, col = 'red') + 
+  geom_smooth(method = "lm", formula = y ~ poly(x, 1, raw = TRUE), aes(color =  "1"), se = F) +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 2, raw = TRUE), aes(color =  "2"), se = F) +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 3, raw = TRUE), aes(color =  "3"), se = F) +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 4, raw = TRUE), aes(color =  "4"), se = F) +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 5, raw = TRUE), aes(color =  "5"), se = F) +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 6, raw = TRUE), aes(color =  "6"), se = F) +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 7, raw = TRUE), aes(color =  "7"), se = F) +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 8, raw = TRUE), aes(color =  "8"), se = F) +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 9, raw = TRUE), aes(color =  "9"), se = F) +
+  labs(title = TITLE,
+       subtitle = "Polynomial fits of various degree",
+       x = "Age [Years]", 
+       y = "Normalized Fraction", 
+       color = "Degree") 
+```
+
+**There is nothing remarkable about how these polynomial fits are nearly perfect.**  This is common with various curve fitting algorithms, but the curve fitting process offers few insights about the nature of the curve.
+
+## Akaike Information Criterion (AIC)
+
+Use AIC to try to prevent overfitting.
+
+[Video with explanation](https://www.youtube.com/watch?v=0qPFRMJxm-k) of using AIC with polynomial regression.
+
+The best-fit model according to AIC is the one that explains the greatest amount of variation using the fewest possible independent variables.
+
+We want a high enough degree for curvature/wiggliness, but not too high that would overfit the data.
+
+We need to be cautious using [higher degree polynomials (n > 4) since that may lead to over-fitting](https://datascienceplus.com/fitting-polynomial-regression-r/). Over-fitting happens when your model is picking up the noise instead of the signal 
+
+Use abbreviated variable names
+
+```{r}
+x <- keyRaw$age
+y <- keyRaw$keyValue
+```
+
+```{r}
+fits <- list()
+```
+
+```{r}
+for (degree in 1:9)
+{
+  newfit <- lm(y ~ poly(x, degree, raw = TRUE))
+  fits[[degree]] <- newfit
+}
+
+length(fits)
+```
+
+```{r}
+unlist(lapply(fits, AIC))
+```
+
+In this case, AIC values are monotonically decreasing for degrees 1 though 9.  The smallest ("best") is for the 9th degree polynomial, but that seems to be overfitting.  Use of AIC to pick the "best" model in this case is inconclusive.
+
+## R-Squared and Adjust R-Squared Values by Degree
+
+[See info here](https://stats.stackexchange.com/questions/48703/what-is-the-adjusted-r-squared-formula-in-lm-in-r-and-how-should-it-be-interpret) about adjusted R-Squared values in R.
+
+```{r}
+extractRSquared <- function(degree, x)
+{
+  tibble(degree        = degree,
+         r.squared     = summary(x[[degree]])$r.squared,
+         adj.r.squared = summary(x[[degree]])$adj.r.squared)
+}
+```
+
+
+```{r}
+rsqData <- 
+  1:length(fits)  %>%
+  map_df(extractRSquared, fits)
+
+rsqData %>%  Show()
+```
+
+Here both $R^2$ values are monotonically increasing, suggesting a higher degree is a "better" fit. However, there is little improvement from degree 7 or higher.
+
+# Certain polynomial degree fits
+
+Including 95% confidence intervals
+
+## Degree 5
+
+```{r polyfit5, fig.width = 8, fig.height = 6}
+ggplot(keyRaw, aes(age, keyValue))       + 
+  geom_point(size = 4, col = 'red')      + 
+  geom_smooth(method = "lm", formula = y ~ poly(x, 5, raw = TRUE), aes(color =  "5")) +
+  labs(title = TITLE,
+       subtitle = "Polynomial fit of degree 5 with 95% confidence interval",
+       x = "Age [Years]", 
+       y = "Normalized Fraction", 
+       color = "Degree")                 +
+  annotate(
+            "text", 
+            x = 18, 
+            y = 0.62,
+            label = createPolynomialText(fits[[5]]$coefficients %>% as.numeric()),
+            hjust = 0, 
+            size  = 4,
+            parse = TRUE
+          )                              +
+  theme(legend.position = "none")   
+```
+
+```{r}
+summary(fits[[5]])
+```
+
+```{r}
+fits[[5]]$coefficients
+```
+
+```{r residuals5}
+boxplot(fits[[5]]$residuals, main = "Residuals Boxplot for 5th Degree Polynomial Fit" )
+```
+
+Fivenum summary:  min, Q1, Q2 (median), Q3, max
+
+```{r}
+fivenum(fits[[5]]$residuals)
+```
+
+## Degree 6
+
+```{r polyfit6, fig.width = 8, fig.height = 6}
+ggplot(keyRaw, aes(age, keyValue))  +
+  geom_point(size = 4, col = 'red') +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 6, raw = TRUE), aes(color =  "6")) +
+  labs(title = TITLE,
+       subtitle = "Polynomial fit of degree 6 with 95% confidence interval",
+       x = "Age [Years]",
+       y = "Normalized Fraction",
+       color = "Degree")            +
+  annotate(
+            "text", 
+            x = 18, 
+            y = 0.62,
+            label = createPolynomialText(fits[[6]]$coefficients %>% as.numeric()),
+            hjust = 0, 
+            size  = 4,
+            parse = TRUE
+          )                              +
+  theme(legend.position = "none")
+```
+
+```{r}
+summary(fits[[6]])
+```
+
+```{r}
+fits[[6]]$coefficients
+```
+
+```{r residuals6}
+boxplot(fits[[6]]$residuals, main = "Residuals Boxplot for 6th Degree Polynomial Fit" )
+```
+
+```{r}
+fivenum(fits[[6]]$residuals)
+```
+
+## Degree 7
+
+```{r polyfit7, fig.width = 8, fig.height = 6}
+ggplot(keyRaw, aes(age, keyValue))  +
+  geom_point(size = 4, col = 'red') +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 7, raw = TRUE), aes(color =  "7")) +
+  labs(title = TITLE,
+       subtitle = "Polynomial fit of degree 7 with 95% confidence interval",
+       x = "Age [Years]",
+       y = "Normalized Fraction",
+       color = "Degree")            +
+  annotate(
+            "text", 
+            x = 18, 
+            y = 0.62,
+            label = createPolynomialText(fits[[7]]$coefficients %>% as.numeric()),
+            hjust = 0, 
+            size  = 3,
+            parse = TRUE
+          )                              +
+  theme(legend.position = "none")
+```
+
+```{r}
+summary(fits[[7]])
+```
+
+```{r}
+fits[[7]]$coefficients
+```
+
+```{r residuals7}
+boxplot(fits[[7]]$residuals, main = "Residuals Boxplot for 7th Degree Polynomial Fit" )
+```
+
+```{r}
+fivenum(fits[[7]]$residuals)
+```
+
+# Epilog {.tabset .tabset-fade .tabset-pills}
+
+## {.active}
+
+## Session Info
+
+```{r devtoolsSessionInfo}
+devtools::session_info()
+```
+
+</div>
+
+```{r epilogDeltaTime, echo=FALSE}
+time.2 <- Sys.time()
+processingTime <- paste("Processing time:", sprintf("%.1f",
+                        as.numeric(difftime(time.2,
+                                            time.1, units="secs"))), "secs\n")
+```
+
+`r processingTime`
+`r format(time.2, "%Y-%m-%d %H%M")`
+

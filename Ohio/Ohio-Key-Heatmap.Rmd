@@ -1,0 +1,384 @@
+---
+title: "Ohio Key Heatmap"
+author: "Earl F Glynn<br>"
+date: "<small>`r Sys.Date()`</small>"
+output:
+  html_document:
+    theme: cerulean
+    toc: yes
+    toc_depth:  3
+    toc_float:
+      collapsed:  yes
+      smooth_scroll: yes
+    number_sections: yes
+    code_folding:  show
+---
+
+Analysis of data in Ohio file `key.json` from results in Jupyter notebook `Election-Integrity/Ohio/rlee32/Analysis/Ohio-Analysis-4-Generate-Key.html`
+
+combined with county key data from Jupyter notebook
+`Ohio-Analysis-3-All-Counties.html`
+
+```{r setup, echo = FALSE}
+# http://biostat.mc.vanderbilt.edu/wiki/Main/KnitrHtmlTemplate
+require(Hmisc)    # provides knitrSet and other functions
+knitrSet(lang = 'markdown',   # If using blogdown: knitrSet(lang='blogdown')
+         fig.align = 'left',
+         w = 6.5,
+         h = 4.5,
+         cache = FALSE)
+```
+
+`r hidingTOC(buttonLabel = "Outline")`
+
+```{r startYourEngines, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  comment = NA)
+
+time.1 <- Sys.time()
+```
+
+# Setup {.tabset .tabset-fade .tabset-pills}
+
+## {.active}
+
+## Constants
+
+```{r Constants}
+FILE_PREFIX   <- "x"    # no spaces
+```
+
+```{r}
+EXCEL_LIMIT <- 2^20
+```
+
+```{r}
+stamp <- paste("efg", format(time.1, "%Y-%m-%d %H%M"))
+```
+
+## Packages
+
+```{r Packages}
+library(tidyverse)
+```
+
+Display formatting
+
+```{r Display}
+library(kableExtra)  # kable_styling
+#library(IRdisplay)   # display_html (needed in Jupyter notebooks)
+```
+
+I/O
+
+```{r IO}
+library(readxl)      # read_xlsx
+library(readr)       # write_csv
+library(writexl)     # write_xlsx
+```
+
+```{r}
+library(RJSONIO)
+```
+
+ Graphics
+
+```{r Graphics}
+library(scales)      # comma, comma_format
+```
+
+## ggplot theme
+
+[ggplot Themes Gallery](https://www.datanovia.com/en/blog/ggplot-themes-gallery/)
+
+```{r ggplotTheme}
+theme_set(theme_minimal() +
+
+          theme(axis.text             = element_text(size = 10),
+                axis.title            = element_text(size = 14),
+
+                plot.caption          = element_text(hjust = c(0.0,1.0)),
+                plot.caption.position = "plot",   # R 4.0.0
+
+                plot.title.position   = "plot",
+                title                 = element_text(size = 14))
+           )
+
+COLOR_BAR     <- "skyblue"
+COLOR_OUTLINE <- "grey80"
+```
+
+## Helper functions
+
+```{r Helpers}
+Show <- function(data, caption="", bigMark="",
+                 height = NULL, width = NULL, ...)
+{
+  data                                       %>%
+  kable("html", caption=caption,
+        format.args=list(big.mark=bigMark))  %>%
+  kable_styling(bootstrap_options=c("striped", "bordered", "condensed"),
+                position="left",
+                full_width=FALSE, ...)       %>%
+  scroll_box(height = height, width = width) 
+}
+```
+
+# Read `Key` data
+
+## All Counties
+
+```{r}
+OhioNormalized <- 
+  read_csv("Ohio-County-Normalized-Turnout-by-Age.csv")  %>%
+  select(-c(Age101:Age105))
+
+dim(OhioNormalized)
+```
+
+## Ohio statewide
+
+```{r}
+JSON <- fromJSON("key.json")
+
+OhioKeyRaw <- 
+  tibble(age = as.numeric( names(JSON) ),
+         keyValue = as.numeric(JSON))  %>%
+  arrange(age)
+
+dim(OhioKeyRaw)
+```
+
+Make sure there are no gaps in age
+
+Restrict to age 100 to match Dr. Frank's plot as closely as possible.
+
+```{r}
+OhioKeyRaw <-
+  OhioKeyRaw  %>%
+  filter(age <= 100)
+
+nrow(OhioKeyRaw)
+```
+
+## Combine
+
+```{r}
+Ohio <-
+  bind_rows(OhioNormalized,
+            bind_cols(Code = 89, County = "OHIO"))
+
+Ohio[89, 3:85] <-as.list(OhioKeyRaw$keyValue)
+
+Ohio %>%
+  tail(2)  %>%
+  Show()
+```
+
+## "Longer" versions
+
+```{r}
+countyLonger <-
+  Ohio                                 %>%
+  filter(County != "OHIO")             %>%
+  select(-Code)                        %>%
+  pivot_longer(Age018:Age100,
+               names_to = "AgeString",
+               values_to = "turnout")  %>%
+  mutate(Age = str_sub(AgeString, 4, 6) %>% as.numeric())  %>%
+  select(-AgeString)                                       %>%
+  filter(turnout > 0)                                      %>%  # drop missing
+  arrange(County, Age)
+
+dim(countyLonger)
+```
+
+```{r}
+countyLonger  %>%
+  head(3)    %>%
+  Show()
+```
+
+```{r}
+write_xlsx(countyLonger, "County-Longer.xlsx")
+```
+
+
+```{r}
+stateLonger <-
+  Ohio                                 %>%
+  filter(County == "OHIO")             %>%
+  select(-Code)                        %>%
+  pivot_longer(Age018:Age100,
+               names_to = "AgeString",
+               values_to = "turnout")  %>%
+  mutate(Age = str_sub(AgeString, 4, 6) %>% as.numeric())  %>%
+  select(-AgeString)                                       %>%
+  arrange(Age)
+
+dim(stateLonger)
+```
+
+```{r}
+stateLonger  %>%
+  head(3)    %>%
+  Show()
+```
+
+# Ohio Normalized Voter Fraction by Age
+
+## Composite plot with all counties
+
+```{r OhioNormalized, fig.width = 8, fig.height = 6}
+TITLE <- "Ohio Normalized Voter Fraction by Age"
+
+normalizedVoted <-
+  ggplot()                                      +
+  
+  geom_line(data = countyLonger, 
+            aes(x = Age, y= turnout, 
+                group = County),
+            color = "grey", size = 1)           +
+  
+  geom_line(data = stateLonger, 
+            aes(x = Age, y= turnout),
+            color = "red", size = 2)            +
+  
+  scale_x_continuous(breaks = 2:10 * 10,
+                     limits = c(18, 100) )      +
+  scale_y_continuous(breaks = 0:7 * 0.2,
+                     limits = c(0, 1.40) )      +
+  labs(
+        title = TITLE,
+        subtitle = paste0("Ohio state = red line; ",
+                          "88 counties = grey lines; ",
+                          "no exclusions for low counts cause 'noise' for older ages"),
+        x = "Election Day Age[years]",
+        y = "Normalized Fraction of Voters",
+        caption = c("Source:  Ohio Secretary of State, Voter File, 2022-03-25",
+                     stamp)
+      )                                          +
+  theme(title = element_text(size = 12),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank())                        
+
+print(normalizedVoted)
+```                   
+
+## Heatmap with all counties
+
+```{r}
+library(gplots)
+```
+
+```{r}
+comparisonMatrix <- as.matrix(Ohio %>% select(-Code, -County))
+dim(comparisonMatrix)
+```
+
+```{r}
+dimnames(comparisonMatrix) <- list(
+                                    Ohio$County,
+                                    str_sub(colnames(Ohio[c(-1, -2)]), 4, 6) %>% as.numeric()
+                                   )
+```
+
+
+```{r}
+comparisonMatrix[1:5, 1:5]
+```
+
+```{r}
+ratioStats <- fivenum(comparisonMatrix)
+
+ratioStats
+```
+
+```
+colorBreaks <- (0:15) / 15 * (max(ratioStats) - min(ratioStats)) 
+colorBreaks
+```
+
+Want color palette balanced around 1, but data are skewed a bit on the lower side.  So, let's create
+pallete with 10 colors below 1, and 4 above 1 to put middle color exactly at 1.
+
+This gives an imbalanced palette:
+
+```
+colorPalette <- colorRampPalette(c("red", "white", "skyblue"))
+```
+
+```{r}
+colorPalette <-
+  c(colorRampPalette(c("red",   "white"))(11)[1:10],  # skip last
+    "#FFFFFF",                                        # color for ratio of 1
+    colorRampPalette(c("white", "skyblue"))(5)[2:5])  # skip first
+    
+colorPalette
+```
+
+
+```{r}
+# layout matrix 1 = heatmap, 2 = row dendrogrm, 3 = column dendrogram, 4 = key
+lmat <- rbind( c(0, 3, 3),  # layout matrix
+               c(2, 1, 1),
+               c(4, 0, 0))
+
+lwid <- c(3, 4, 4)          # entry for each column in layout matrix
+
+# relative height of the rows. must have length = nrow(lmat)
+lhei <- c(0.25, 4, 0.25)          # entry for each row in layout matrix
+```
+
+```{r heatmap, fig.width = 20, fig.height = 32}
+
+heatmap.2(
+           comparisonMatrix,
+           scale      = "none",
+           dendrogram = "row",
+           Colv       = NA,         # suppress reordering of columns
+           
+           trace  = "none",         # turns off trace lines inside the heat map
+           col    = colorPalette,
+      #    breaks = colorBreaks,
+           
+           margins = c(4, 10),      # column and row names
+           
+           main   = TITLE,  
+           
+           cexRow = 1.5,    
+           cexCol = 1.25,
+           
+           key.title = NA,           # suppress title
+           key.xlab  = "Normalized Turnout Nov 2020",
+           keysize   = 2,
+           density.info = "none",    # turns off density plot inside color legend
+          
+           lmat = lmat, lwid = lwid, lhei = lhei
+         )                           
+```
+
+
+# Epilog {.tabset .tabset-fade .tabset-pills}
+
+## {.active}
+
+## Session Info
+
+```{r devtoolsSessionInfo}
+devtools::session_info()
+```
+
+</div>
+
+```{r epilogDeltaTime, echo=FALSE}
+time.2 <- Sys.time()
+processingTime <- paste("Processing time:", sprintf("%.1f",
+                        as.numeric(difftime(time.2,
+                                            time.1, units="secs"))), "secs\n")
+```
+
+`r processingTime`
+`r format(time.2, "%Y-%m-%d %H%M")`
+

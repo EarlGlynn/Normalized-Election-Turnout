@@ -1,0 +1,1014 @@
+---
+output:
+  html_document:
+    theme: cerulean
+    toc: yes
+    toc_depth:  3
+    toc_float:
+      collapsed:  yes
+      smooth_scroll: yes
+    number_sections: yes
+    code_folding:  hide
+params:
+  ReportTitle:      "Normalized Turnout for Smith County, KS" 
+  District:         "County"
+  DistrictName:     "Smith" 
+  ElectionDate:     "2020-11-03"
+  ElectionName:     "General"
+  AfterFileDate:    "2021-02-05"
+  AgeLimit:         105
+  PrecinctMinimum:   25
+  voterMaster:        0
+    
+title:  "`r params$ReportTitle`"        
+author: "Earl F Glynn"
+date: "<small>`r Sys.Date()`</small>"
+---
+
+```{r setup, echo = FALSE}
+# http://biostat.mc.vanderbilt.edu/wiki/Main/KnitrHtmlTemplate
+require(Hmisc)    # provides knitrSet and other functions
+knitrSet(lang = 'markdown',   # If using blogdown: knitrSet(lang='blogdown')
+         fig.align = 'left',
+         w = 6.5,
+         h = 4.5,
+         cache = FALSE)
+```
+
+`r hidingTOC(buttonLabel = "Outline")`
+
+```{r setup2, include = FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  comment    = NA)
+
+time.1 <- Sys.time()
+```
+         
+# Setup {.tabset .tabset-fade .tabset-pills}
+
+##  {.active}
+
+## Constants
+
+```{r}
+EXCEL_LIMIT <- 2^20
+```
+
+```{r}
+params
+```     
+
+## Packages                             
+
+```{r}
+library(tidyverse)
+library(lubridate)   # date functions
+library(scales)      # comma
+
+library(readxl)
+library(writexl)
+library(kableExtra) 
+
+library(gplots)      # heatmap.2
+```
+
+## ggplot theme
+
+```{r}
+theme_set(theme_minimal() +
+
+          theme(axis.text             = element_text(size = 10),
+                axis.title            = element_text(size = 14),
+                
+                legend.position       = "bottom",
+                
+                plot.caption          = element_text(hjust = c(0.0,1.0),
+                                                     size = 10),
+                plot.caption.position = "plot",
+
+                plot.title.position   = "plot",
+                
+                strip.background      = element_rect(fill = "aliceblue"),
+                strip.text            = element_text(size = 14),        
+                
+                title                 = element_text(size = 14)))
+```
+
+## Helper Functions
+
+```{r}
+Show <- function(data, caption="", bigMark="", ...)
+{
+  data                                                    %>%
+  kable("html", 
+        caption = caption,
+        format.args = list(big.mark = bigMark))   %>%
+  kable_styling(bootstrap_options = c("striped", "bordered", "condensed"),
+                position = "left", 
+                full_width = FALSE, ...)
+}
+```
+
+```{r}
+ageDataByGroup <- function(VOTERS, GROUP)
+{
+  VOTERS                   %>%
+  group_by(Age, {{GROUP}}) %>%
+  summarize(Registered     = n(),
+            Active         = sum(Status == "A",   na.rm = TRUE),
+            Voted          = sum(VotedInElection, na.rm = TRUE),
+
+            ActivePercent  = 100 * Active / Registered,
+            VotedPercent   = 100 * Voted  / Registered,
+            .groups = "drop")   %>%
+  ungroup()
+}
+```                               
+
+```{r}
+bySummary <- function(VOTERS, GROUP)
+{
+  VOTERS               %>%
+  group_by({{GROUP}})  %>%
+  summarize(Registered = n(),
+            Active     = sum(Status == "A",   na.rm = TRUE),
+            Voted      = sum(VotedInElection, na.rm = TRUE),
+
+            ActivePercent = 100 * Active / Registered,
+            VotedPercent  = 100 * Voted  / Registered,
+            .groups = "drop")   %>%
+  ungroup()  
+}
+```
+
+# Parameters
+
+Use first publicly available voter list after a general election whenever possible.
+
+```{r}
+ELECTION_DATE    <- params$ElectionDate   # Use for age computations    
+AFTER_FILE_DATE  <- params$AfterFileDate 
+
+ELECTION_NAME    <- params$ElectionName                  
+
+AGE_LIMIT        <- params$AgeLimit
+PRECINCT_MINIMUM <- params$PrecinctMinimum
+
+voterMaster      <- params$voterMaster
+```
+
+```{r}
+FigureDistrict <- paste(params$DistrictName, params$District)
+FigureTitle    <-  paste("Kansas", ELECTION_NAME, "Election", ELECTION_DATE)
+Source         <- paste("Source:  Kansas Secretary of State, Voter File ",
+                        AFTER_FILE_DATE)
+Stamp          <- paste("efg", format(time.1, "%Y-%m-%d %H%M"))
+```
+
+# Define Kansas Data
+
+```{r, results = "asis"}
+cat("## Filter to Target", FigureDistrict, "\n")
+```
+
+```{r}
+if (params$District == "County")
+{
+  voterList <- 
+    voterMaster   %>%
+    filter(County == params$DistrictName)
+}
+```
+
+```{r, results = "asis"}
+cat("#", FigureDistrict, "Summary\n")
+```
+
+```{r}
+voterList %>%
+  summarize(
+             n         = n(),
+             nID14     = n_distinct(ID14),
+             nSOSKey   = n_distinct(SOSKey),
+             nVoted    = sum(VotedInElection, na.rm = TRUE),
+             nParty    = n_distinct(Party),
+             nGender   = n_distinct(Gender),
+             nPrecinct = n_distinct(Precinct),
+             minAge    = min(Age, na.rm = TRUE),
+             maxAge    = max(Age, na.rm = TRUE)
+            )  %>%
+  Show(bigMark = ",")
+```
+
+When `nSOSKey` > `nID14` there are very likely some duplicate voter records that should be deleted. 
+
+Number of voters with age > 105 years old:
+
+```{r}
+tooOld <-
+  voterList  %>%
+  filter(Age > AGE_LIMIT | is.na(Age))
+
+nrow(tooOld)
+```
+
+These "too old" voters (or those without age) written to file `Too-Old-Voters.xlsx'
+
+```{r}
+if (nrow(tooOld) > 0)
+{
+  write_xlsx(tooOld, paste0("Too-Old-Voters-", params$DistrictName, ".xlsx"))
+}
+```
+
+Any too young?     
+
+```{r}
+tooYoung <-
+  voterList  %>%
+  filter(Age < 18)
+
+nrow(tooYoung)
+```
+
+```{r}
+if (nrow(tooYoung) > 0)
+{
+  write_xlsx(tooYoung, paste0("Too-Young-Voters-", params$DistrictName, ".xlsx"))
+}
+```                
+
+Voter count after removal of "too young", "too old" and missing age    
+
+```{r}
+voterList <-
+  voterList  %>%
+  filter(Age >= 18,
+         Age <= params$AgeLimit,
+         !is.na(Age))
+
+nrow(voterList)
+```            
+
+## Counts by Age
+
+Number of age intervals
+
+```{r}
+ageData  <- 
+  voterList            %>%
+  group_by(Age)        %>%
+  summarize(Registered = n(),
+            Active     = sum(Status == "A",   na.rm = TRUE),
+            Voted      = sum(VotedInElection, na.rm = TRUE),
+            
+            ActivePercent = 100 * Active / Registered,
+            VotedPercent  = 100 * Voted  / Registered,
+            .groups = "drop")   %>%
+  ungroup()       
+
+nrow(ageData)
+```
+
+Total number of Registered, Active, Voted
+
+```{r}
+countsRegistered <- sum(ageData$Registered, na.rm = TRUE)
+countsActive     <- sum(ageData$Active,     na.rm = TRUE)
+countsVoted      <- sum(ageData$Voted,      na.rm = TRUE)
+
+c(countsRegistered, countsActive, countsVoted)
+```
+
+## Voter Counts: Registered, Active, Voted by Age
+
+```{r}
+countPlotData <- 
+  ageData                                                       %>%
+  select(Age, 
+         `Registered Voters` = Registered, 
+         `Active Voters`     = Active, 
+         `Ballots Cast`      = Voted)                           %>%     #####
+  pivot_longer(-Age, names_to = "Group", values_to = "Voters")  %>%
+  mutate(Group = factor(Group,  # control order for legend
+                        levels = c("Registered Voters",
+                                   "Active Voters",
+                                   "Ballots Cast"))) %>%
+  arrange(Group, Age)
+```
+
+```{r RegisteredActiveVoted, fig.width = 8, fig.height = 6}       
+registeredActiveVoted <-
+  ggplot(countPlotData, aes(Age, y= Voters, color = Group)) +
+  geom_line(size = 2)                                    +
+  scale_y_continuous(labels = scales::comma)             +     
+  scale_x_continuous(breaks = 20 + 0:8 * 10)             +
+  scale_color_manual(values = c("grey", "black", "red")) + 
+  labs(
+        title = paste0(FigureTitle, ":  Voters by Age",
+                       " - ", FigureDistrict),
+        subtitle = paste0(comma(countsRegistered), " Registered Voters; ", 
+                          comma(countsActive),     " Active Voters; ",
+                          comma(countsVoted),      " Ballots Cast "), 
+        x = "Election Day Age[years]",
+        y = "Number of Voters by Age",
+        caption = c(Source, Stamp)
+      )                                                  
+
+print(registeredActiveVoted)
+```
+
+## Fraction of Registered Voters by Age: Active, Ballots Cast
+
+```{r}
+fractionPlotData <- 
+  ageData                                                        %>%
+  select(Age, 
+         `Active Voters` = ActivePercent, 
+         `Ballots Cast`  = VotedPercent)                      %>%
+  pivot_longer(-Age, names_to = "Group", values_to = "Percent")  %>%
+  mutate(Group = factor(Group,  # control order for legend
+                        levels = c("Active Voters", "Ballots Cast"))) %>%
+  arrange(Group, Age)
+```
+
+```{r}
+overallFractionActive = sum(ageData$Active) / sum(ageData$Registered)
+overallFractionVoted  = sum(ageData$Voted)  / sum(ageData$Registered)
+
+c(overallFractionActive, overallFractionVoted)
+```
+
+```{r ActiveVotedPercentage, fig.width = 8, fig.height = 6}
+activeVoted <-
+  ggplot(fractionPlotData, aes(Age, y= Percent, color = Group))    +
+  geom_line(size = 2)                                    +
+  
+  geom_hline(yintercept = 100 *overallFractionActive, 
+             color = "black", 
+             linetype = "dotted", size = 1)              +
+  geom_text(aes(x = 15,
+                y = 100 * overallFractionActive,
+                label = paste0(round(100 * overallFractionActive, 2), "%")),
+                color = "black", hjust = 0, vjust = 1, size = 4)   +
+  
+  geom_hline(yintercept = 100 *overallFractionVoted, 
+             color = "red", 
+             linetype = "dotted", size = 1)                        +
+  geom_text(aes(x = 15,
+                y = 100 * overallFractionVoted, 
+                label = paste0(round(100 * overallFractionVoted, 2), "%")),
+                color = "red", hjust = 0, vjust = 1, size = 4)     +
+  
+  scale_y_continuous(breaks =      0:10 * 10)            +
+  scale_x_continuous(breaks = 20 + 0: 8 * 10)            +
+  scale_color_manual(values = c("black", "red"))         +
+  labs(
+        title = paste0(FigureTitle, ":  Percent of Registered Voters",
+                       " - ", FigureDistrict),
+        x = "Election Day Age[years]",
+        y = "Percentage of Registered Voters",
+        caption = c(Source, Stamp)
+      )                                                  +                          
+  theme(title = element_text(size = 12))
+
+print(activeVoted)
+```                    
+
+## Normalized Fraction 
+
+The normalization is formed by the ratio of turnout by age to the overall turnout for all ages (the dotted line in the diagram above). 
+
+What is the intuition for this normalization?
+
+* Normalized fraction < 1 shows ages that "underperformed".
+
+* Normalized fraction > 1 shows ages that "outperformed".
+
+* Normalized fraction can be compared across different districts, like state and county.
+
+```{r}
+normalized <- 
+  ageData    %>%
+  mutate(ActiveNormalized = (ActivePercent/100) / overallFractionActive,
+         VotedNormalized  = (VotedPercent/100)  / overallFractionVoted)
+```
+
+```{r}
+normalizedPlotData <- 
+  normalized                                                   %>%
+  select(Age, 
+         `Active Voters` = ActiveNormalized, 
+         `Ballots Cast`  = VotedNormalized)                   %>%
+  pivot_longer(-Age, names_to = "Group", values_to = "Ratio")  %>%
+  mutate(Group = factor(Group,  # control order for legend
+                        levels = c("Active Voters", "Ballots Cast"))) %>%
+  arrange(Group, Age)
+```
+
+```{r NormalizedActiveVoted, fig.width = 8, fig.height = 6}
+normalizedVoted <-
+  ggplot(normalizedPlotData, aes(Age, y= Ratio, color = Group))  +
+  geom_line(size = 2)                                            +
+  geom_hline(yintercept = 1.0, color = "blue", 
+             linetype = "dotted", size = 1)                      +
+  scale_x_continuous(breaks = 20 + 0: 8 * 10)                    +
+  scale_y_continuous(breaks = 0.01 * 0:24 * 10)                  +
+  scale_color_manual(values = c("black", "red"))                 +
+  labs(
+        title = paste0(FigureTitle, ":  Normalized Voter Fraction",
+                       " - ", FigureDistrict),
+        x = "Election Day Age[years]",
+        y = "Normalized Fraction of Voters",
+        caption = c(Source, Stamp)
+      )                                                          +
+  theme(title = element_text(size = 12))
+
+print(normalizedVoted)
+```                   
+
+# By Party
+
+```{r}
+ageDataByParty <- ageDataByGroup(voterList, Party)
+nrow(ageDataByParty)
+```
+
+```{r}
+byParty <- bySummary(voterList, Party)
+byParty %>%  Show()
+```
+
+```{r}
+countPlotDataByParty <- 
+  ageDataByParty                                                %>%
+  select(Age, Party,
+         `Registered Voters` = Registered, 
+         `Active Voters`     = Active, 
+         `Ballots Cast`      = Voted)                           %>%     #####
+  pivot_longer(c(-Age,-Party), names_to = "Group", values_to = "Voters")  %>%
+  mutate(Group = factor(Group,  # control order for legend
+                        levels = c("Registered Voters",
+                                   "Active Voters",
+                                   "Ballots Cast"))) %>%
+  arrange(Group, Age, Party)
+
+nrow(countPlotDataByParty)
+```
+
+## Voter Registration Counts
+
+```{r}
+partyCounts <- table(voterList$Party)
+partyCounts
+```
+
+
+```{r}
+partyLabel <- c("D" = paste("Democratic",   comma(partyCounts["D"])),
+                "L" = paste("Libertarian",  comma(partyCounts["L"])), 
+                "R" = paste("Republican",   comma(partyCounts["R"])), 
+                "U" = paste("Unaffiliated", comma(partyCounts["U"])))
+```
+
+```{r}
+if (length(partyCounts) == 5)   # 2010 and earlier
+{
+  partyLabel = c(partyLabel[1],
+                 "F" = paste("Reform",  comma(partyCounts["F"])),
+                 partyLabel[2:4])
+}
+```
+
+```{r}
+registeredActiveVotedByParty <-
+  ggplot(countPlotDataByParty, 
+         aes(x = Age, y= Voters, color = Group))         +
+  geom_line(size = 2)                                    +
+  scale_y_continuous(labels = scales::comma)             +     
+  scale_x_continuous(breaks = 20 + 0:8 * 10)             +
+  scale_color_manual(values = c("grey", "black", "red")) + 
+  labs(
+        title = paste0(FigureTitle, ":  Voters by Party and Age",
+                       " - ", FigureDistrict),
+        x = "Election Day Age[years]",
+        y = "Number of Voters by Age",
+        caption = c(Source, Stamp)
+      )                                                  +
+  theme(panel.grid.minor.x = element_blank())            +
+  facet_wrap(~Party, 
+             ncol = length(partyLabel),
+             labeller = labeller(Party = partyLabel))    +
+  geom_text(data = byParty,
+            aes(x = 15,
+                y = Inf,
+                label = paste0(comma(Active), " Active Voters\n",
+                               comma(Voted),  " Ballots Cast")),
+            color = "black", hjust = 0, vjust = 1, size = 4)  
+```
+
+```{r RegisteredActiveVotedByParty, fig.width = 12, fig.height = 6}     
+print(registeredActiveVotedByParty)
+```
+
+## Fraction of Voters
+
+```{r}
+partyLabelFraction <-
+  c("D" = paste0("Democratic ",   
+                 round(100 * partyCounts["D"] / sum(partyCounts), 2), "%"),
+    
+    "L" = paste0("Libertarian ",  
+                 round(100 * partyCounts["L"] / sum(partyCounts), 2), "%"),
+    
+    "R" = paste0("Republican ",   
+                 round(100 * partyCounts["R"] / sum(partyCounts), 2), "%"), 
+    
+    "U" = paste0("Unaffiliated ", 
+                 round(100 * partyCounts["U"] / sum(partyCounts), 2), "%"))
+```
+
+```{r}
+if (length(partyCounts) == 5)   # 2010 and earlier
+{
+  partyLabelFraction = c(partyLabelFraction[1],
+                         "F" = paste0("Reform ",
+                                      round(100 * partyCounts["F"] / sum(partyCounts), 2), "%"),
+                         partyLabelFraction[2:4])
+}
+```
+
+```{r}
+fractionByPartyAge <-
+  ageDataByParty                                                      %>%
+  select(Age, Party,
+         `Active Voters` = ActivePercent,
+         `Ballots Cast`  = VotedPercent)                               %>%
+  pivot_longer(c(-Age, -Party), names_to = "Group", values_to = "Percent")  %>%
+  mutate(Group = factor(Group,  # control order for legend
+                        levels = c("Active Voters", "Ballots Cast")))  %>%
+  arrange(Group, Age, Party)
+```                 
+
+```{r}
+fractionByParty <-
+  ageDataByParty
+```
+
+```{r}
+activeVotedByParty <-
+  ggplot(fractionByPartyAge, aes(Age, y= Percent, color = Group)) +
+  geom_line(size = 2)                                    +
+  scale_y_continuous(breaks =      0:10 * 10)            +
+  scale_x_continuous(breaks = 20 + 0: 8 * 10)            +
+  scale_color_manual(values = c("black", "red")) +
+  labs(
+        title = paste0(FigureTitle, ":  Percentage of Registered Voters by Party and Age",
+                       " - ", FigureDistrict),
+        x = "Election Day Age[years]",
+        y = "Percentage of Registered Voters",
+        caption = c(Source, Stamp)
+      )                                                  +
+  theme(panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank())            +
+  
+  facet_grid(col = vars(Party),
+             labeller = labeller(Party = partyLabelFraction),
+             scales = "free_x")                          +
+  
+  geom_hline(data = byParty,
+             aes(yintercept = ActivePercent), 
+             color = "black", 
+             linetype = "dotted", size = 1)              +
+  geom_text(data = byParty,
+            aes(x = 15,
+                y = ActivePercent,
+                label = paste0(round(ActivePercent, 1), "%")),
+            color = "black", hjust = 0, vjust = 1, size = 4)   +
+  
+  geom_hline(data = byParty,
+             aes(yintercept = VotedPercent), 
+             color = "red", 
+             linetype = "dotted", size = 1)               +
+  geom_text(data = byParty,
+            aes(x = 15,
+                y = VotedPercent,
+                label = paste0(round(VotedPercent, 1), "%")),
+            color = "red", hjust = 0, vjust = 1, size = 4)  
+```
+
+```{r ActiveVotedPercentageByParty, fig.width = 12, fig.height = 6}
+print(activeVotedByParty)
+```
+                               
+# By Gender
+
+```{r}
+ageDataByGender <- ageDataByGroup(voterList, Gender)
+nrow(ageDataByGender)
+```
+
+```{r}
+byGender <- bySummary(voterList, Gender)
+byGender %>% Show()
+```
+
+```{r}
+countPlotDataByGender <-
+  ageDataByGender                                               %>%
+  select(Age, Gender,
+         `Registered Voters` = Registered,
+         `Active Voters`     = Active,
+         `Ballots Cast`      = Voted)                           %>%     #####
+  pivot_longer(c(-Age,-Gender), names_to = "Group", values_to = "Voters")  %>%
+  mutate(Group = factor(Group,  # control order for legend
+                        levels = c("Registered Voters",
+                                   "Active Voters",
+                                   "Ballots Cast"))) %>%
+  arrange(Group, Age, Gender)
+
+nrow(countPlotDataByGender)
+```
+
+## Voter Registration Counts
+
+```{r}
+genderCounts <- table(voterList$Gender)
+genderCounts
+```
+
+
+```{r}
+genderLabel <- c("Female"  = paste("Female",  comma(genderCounts["Female"])),
+                 "Male"    = paste("Male",    comma(genderCounts["Male"])),
+                 "Unknown" = paste("Unknown", comma(genderCounts["Unknown"])))
+```
+
+```{r}
+registeredActiveVotedByGender <-
+  ggplot(countPlotDataByGender,
+         aes(x = Age, y= Voters, color = Group))         +
+  geom_line(size = 2)                                    +
+  scale_y_continuous(labels = scales::comma)             +
+  scale_x_continuous(breaks = 20 + 0:8 * 10)             +
+  scale_color_manual(values = c("grey", "black", "red")) +
+  labs(
+        title = paste0(FigureTitle, ":  By Gender and Age",
+                       " - ", FigureDistrict),
+        x = "Election Day Age[years]",
+        y = "Number of Voters by Age",
+        caption = c(Source, Stamp)
+      )                                                  +
+  theme(panel.grid.minor.x = element_blank())            +
+  facet_wrap(~Gender,
+             ncol = length(genderLabel),
+             labeller = labeller(Gender = genderLabel))    +
+  geom_text(data = byGender,
+            aes(x = 15,
+                y = Inf,
+                label = paste0(comma(Active), " Active Voters\n",
+                               comma(Voted),  " Ballots Cast")),
+            color = "black", hjust = 0, vjust = 1, size = 4)
+```
+
+```{r RegisteredActiveVotedByGender, fig.width = 12, fig.height = 6}
+print(registeredActiveVotedByGender)
+```
+
+## Fraction of Voters
+
+```{r}
+genderLabelFraction <-
+  c("Female" = paste0("Female ",
+                 round(100 * genderCounts["Female"]  / sum(genderCounts), 2), "%"),
+
+    "Male" = paste0("Male ",
+                 round(100 * genderCounts["Male"]    / sum(genderCounts), 2), "%"),
+
+    "Unknown" = paste0("Unknown ",
+                 round(100 * genderCounts["Unknown"] / sum(genderCounts), 2), "%"))
+```
+
+```{r}
+fractionByGenderAge <-
+  ageDataByGender                                                     %>%
+  select(Age, Gender,
+         `Active Voter` = ActivePercent,
+         `Ballots Cast` = VotedPercent)                               %>%
+  pivot_longer(c(-Age, -Gender), names_to = "Group", values_to = "Percent")  %>%
+  mutate(Group = factor(Group,  # control order for legend
+                        levels = c("Active Voter", "Ballots Cast")))  %>%
+  arrange(Group, Age, Gender)
+```
+
+```{r}
+fractionByGender <-
+  ageDataByGender
+```
+
+```{r}
+activeVotedByGender <-
+  ggplot(fractionByGenderAge, aes(Age, y= Percent, color = Group)) +
+  geom_line(size = 2)                                    +
+  scale_y_continuous(breaks =      0:10 * 10)            +
+  scale_x_continuous(breaks = 20 + 0: 8 * 10)            +
+  scale_color_manual(values = c("black", "red")) +
+  labs(
+        title = paste0(FigureTitle, ":  Percentage By Gender and Age",
+                       " - ", FigureDistrict),
+        x = "Election Day Age[years]",
+        y = "Percentage of Registered Voters",
+        caption = c(Source, Stamp)
+      )                                                  +
+  theme(panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank())            +
+
+  facet_grid(col = vars(Gender),
+             labeller = labeller(Gender = genderLabelFraction),
+             scales = "free_x")                          +
+
+  geom_hline(data = byGender,
+             aes(yintercept = ActivePercent),
+             color = "black",
+             linetype = "dotted", size = 1)              +
+  geom_text(data = byGender,
+            aes(x = 15,
+                y = ActivePercent,
+                label = paste0(round(ActivePercent, 1), "%")),
+            color = "black", hjust = 0, vjust = 1, size = 4)   +
+
+  geom_hline(data = byGender,
+             aes(yintercept = VotedPercent),
+             color = "red",
+             linetype = "dotted", size = 1)               +
+  geom_text(data = byGender,
+            aes(x = 15,
+                y = VotedPercent,
+                label = paste0(round(VotedPercent, 1), "%")),
+            color = "red", hjust = 0, vjust = 1, size = 4)
+```
+
+```{r ActiveVotedPercentageByGender, fig.width = 12, fig.height = 6}
+print(activeVotedByGender)
+```
+
+# By Precinct
+
+```{r}
+ageDataByPrecinct <- ageDataByGroup(voterList, Precinct)
+nrow(ageDataByPrecinct)
+```
+
+```{r}
+byPrecinct <- 
+  bySummary(voterList, Precinct)  %>%
+  rename(OverallActivePercent = ActivePercent,
+         OverallVotedPercent  = VotedPercent)
+byPrecinct %>%  Show(bigMark = ",") %>%  scroll_box(height = "300px")
+```
+
+## Precinct Size
+
+```{r Precinct_Density}
+ggplot(byPrecinct, aes(x = Registered, y=..density..))          + 
+  geom_histogram(fill = "skyblue", color = "grey80", bins = 50) +
+  scale_x_continuous(labels = scales::comma)                    +
+  labs(title = paste("Precinct Sizes in", FigureDistrict),
+       subtitle = paste("All", nrow(byPrecinct), "precincts"),
+       x = "Precinct Size [registered voters]",
+       y = "Count",
+       caption=c(Source, Stamp))                                   
+```
+
+```{r}
+largeEnough   <- 
+  byPrecinct  %>%
+  filter(Registered >= PRECINCT_MINIMUM)  
+
+nrow(largeEnough)
+```
+  
+```{r Precinct_Density_LargeEnough}
+ggplot(largeEnough, aes(x = Registered, y=..density..))          + 
+  geom_histogram(fill = "skyblue", color = "grey80", bins = 50)  +
+  scale_x_continuous(labels = scales::comma)                     +
+  labs(title = paste("Precinct Sizes in", FigureDistrict),
+       subtitle = paste0(nrow(largeEnough), " precincts",
+                      " [ignoring ", nrow(byPrecinct) - nrow(largeEnough), 
+                      " precincts with fewer than ", PRECINCT_MINIMUM, " registered voters]"),
+       x = "Precinct Size [registered voters]",
+       y = "Count",
+       caption=c(Source, Stamp))                                   
+  
+```
+
+For now, let's only look at voter turnout.
+
+```{r}
+normalizedAgeDataByPrecinct <-
+  byPrecinct                                   %>%
+  select(Precinct, OverallVotedPercent)        %>%
+  inner_join(ageDataByPrecinct,
+             by = "Precinct")                  %>%
+  mutate(NormalizedFractionVoted = VotedPercent / OverallVotedPercent)  %>%
+  select(Precinct, Age, NormalizedFractionVoted) %>%
+  arrange(Precinct, Age)                         
+
+dim(normalizedAgeDataByPrecinct)
+```
+
+## Voter Registration Counts
+
+```{r}
+precinctCounts <- table(voterList$Precinct)
+```
+
+```{r}
+sum(precinctCounts)
+```
+
+## Scatterplot of County Overall with All Precincts
+
+```{r}
+countyNormalized <- 
+  normalizedPlotData                       %>%
+  rename(NormalizedFractionVoted = Ratio)  %>%
+  filter(Group == "Ballots Cast")          %>%
+  select(-Group)                           %>%
+  mutate(Precinct = params$DistrictName)   %>%
+  relocate(Precinct, .before = Age)         
+
+dim(countyNormalized)
+```
+
+```{r NormalizedVotedTurnout, fig.width = 8, fig.height = 6}
+normalizedVoted <-
+  ggplot()                                      +
+  
+  geom_line(data = semi_join(normalizedAgeDataByPrecinct, 
+                             largeEnough,
+                             by = "Precinct"),
+            aes(x = Age, y= NormalizedFractionVoted, 
+                group = Precinct),
+            color = "grey", size = 1)           +
+  
+  geom_line(data = countyNormalized, 
+            aes(x = Age, y= NormalizedFractionVoted),
+            color = "red", size = 2)            +
+  
+  geom_hline(yintercept = 1.0, color = "blue", 
+             linetype = "dotted", size = 1)     +
+  
+  geom_text(aes(x = 85,
+                y = 0.1,
+                label = "Low counts cause 'noise' for many ages"),
+            color = "black", hjust = 1, vjust = 1, size = 4)   +
+  
+  scale_x_continuous(breaks = 2:10 * 10)        +
+  scale_y_continuous(breaks = 0:10 * 0.2,
+                     limits = c(0, 2.0) )       +
+  
+  labs(
+        title = paste0(FigureTitle, ":  Normalized Voter Faction by Age"),
+        subtitle = paste0(FigureDistrict, " = red line; ",
+                          nrow(largeEnough), " Precincts = grey lines;"),
+        x = "Election Day Age[years]",
+        y = "Normalized Fraction of Voters",
+        caption = c(Source, Stamp)
+      )                                         +
+  theme(
+         panel.grid.minor.x = element_blank(),
+         panel.grid.minor.y = element_blank(),
+         title = element_text(size = 12)
+       )                        
+
+print(normalizedVoted)
+```
+
+## Heatmap
+
+Create matrix
+
+```{r}
+County <- 
+  bind_rows(countyNormalized,
+            semi_join(normalizedAgeDataByPrecinct, 
+                             largeEnough,
+                             by = "Precinct"),)  %>%
+  pivot_wider(names_from = Age,
+              values_from = NormalizedFractionVoted,
+              values_fill = list(NormalizedFractionVoted = 0))  %>%
+  mutate(across(everything(), ~replace_na(.x, 0)))   # kludge fix (e.g., Primary 2006)    
+  
+```
+
+```{r}
+comparisonMatrix <- as.matrix(County %>% select(-Precinct))
+dim(comparisonMatrix)
+```
+
+```{r}
+dimnames(comparisonMatrix) <- list(
+                                    County$Precinct,
+                                    colnames(County[-1]) %>% as.numeric()
+                                   )
+```
+
+```{r}
+ratioStats <- fivenum(comparisonMatrix)
+
+ratioStats
+```
+
+```{r}
+colorBreaks <-
+  c(
+    seq(0.0, 1.0, length.out = 12),
+    seq(1.0, 2.0, length.out = 6)[-1]
+  )
+
+colorBreaks
+```
+
+Attempt to "balance" palette above and below 1.
+
+```{r}
+colorPalette <-
+  c(colorRampPalette(c("red",   "white"))(12)[1:11],    # skip last
+    "#FFFFFF",                                        # color for ratio of 1
+    colorRampPalette(c("white", "skyblue"))(5)[2:5])  # skip first
+    
+colorPalette
+```
+
+```{r}
+# layout matrix 1 = heatmap, 2 = row dendrogrm, 3 = column dendrogram, 4 = key
+lmat <- rbind( c(0, 3, 3),  # layout matrix
+               c(2, 1, 1),
+               c(0, 0, 4))
+
+lwid <- c(3, 4, 4)          # entry for each column in layout matrix
+
+# relative height of the rows. must have length = nrow(lmat)
+lhei <- c(0.25, 4, 0.25)    # entry for each row in layout matrix
+```
+
+```{r heatmap, fig.width = 20, fig.height = 32}
+oldPar <- par(mar = c(5, 0, 2, 16))      
+
+heatmap.2(
+           comparisonMatrix,
+           scale      = "none",
+           dendrogram = "row",
+           Colv       = NA,         # suppress reordering of columns
+           
+           trace  = "none",         # turns off trace lines inside the heat map
+           col    = colorPalette,
+           breaks = colorBreaks,
+           
+           margins = c(4, 16),      # column and row names
+           
+           cexRow = 1,    
+           cexCol = 1.25,
+           
+           key.title = NA,           # suppress title
+           key.xlab  = "Normalized Turnout",
+           keysize   = 3,
+           density.info = "none",    # turns off density plot inside color legend
+          
+           lmat = lmat, lwid = lwid, lhei = lhei
+         )
+
+title(main = paste0(FigureTitle, 
+                    ":  Normalized Voter Faction by Age - ",
+                    FigureDistrict),
+      cex.main = 2,
+      sub = paste(Source, " - ", Stamp), 
+      cex.sub  = 1.5)
+
+par(oldPar)  
+```
+
+# Fini {.tabset .tabset-fade .tabset-pills}
+
+## {.active}
+
+## Session Info
+
+```{r}
+sessionInfo()
+```
+
+</div>
+
+```{r ThatsAll, echo = FALSE}
+time.2 <- Sys.time()
+processingTime <- paste("Processing time:", sprintf("%.1f",
+                        as.numeric(difftime(time.2,
+                                            time.1, units="secs"))), "secs\n")
+```
+
+`r processingTime`
+`r format(time.2, "%Y-%m-%d %H%M")`
+                                                                                         

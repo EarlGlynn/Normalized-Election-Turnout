@@ -1,0 +1,165 @@
+---
+title:  "Driver to Create Statewide Normalized Turnout Reports"
+author: "Earl F Glynn"
+date: "<small>`r Sys.Date()`</small>"
+output:
+  html_document:
+    theme: cerulean
+    toc: yes
+    toc_depth:  3
+    toc_float:
+      collapsed:  yes
+      smooth_scroll: yes
+    number_sections: yes
+    code_folding:  show
+---
+
+```{r Dsetup, echo = FALSE}
+# http://biostat.mc.vanderbilt.edu/wiki/Main/KnitrHtmlTemplate
+require(Hmisc)    # provides knitrSet and other functions
+knitrSet(lang = 'markdown',   # If using blogdown: knitrSet(lang='blogdown')
+         fig.align = 'left',
+         w = 6.5,
+         h = 4.5,
+         cache = FALSE)
+```
+
+`r hidingTOC(buttonLabel = "Outline")`
+
+```{r Dsetup2, include = FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  comment    = NA)
+
+time.1 <- Sys.time()
+```
+
+# Setup {.tabset .tabset-fade .tabset-pills}
+
+##  {.active}
+
+## Constants
+
+```{r DConstants}
+EXCEL_LIMIT <- 2^20
+```
+
+## Packages
+
+```{r DPackages}
+library(rmarkdown)
+library(tidyverse)
+library(lubridate)
+
+library(readxl)
+library(kableExtra) 
+```
+
+## Helper Functions
+
+```{r DHelper}
+Show <- function(data, caption="", bigMark="", ...)
+{
+  data                                                    %>%
+  kable("html", 
+        caption = caption,
+        format.args = list(big.mark = bigMark))   %>%
+  kable_styling(bootstrap_options = c("striped", "bordered", "condensed"),
+                position = "left", 
+                full_width = FALSE, ...)
+}
+```
+
+# Metadata
+
+```{r DShow}
+metadata <- read_xlsx("Statewide-Elections.xlsx") 
+
+metadata  %>% Show()
+```
+
+# Function to Process Election
+
+```{r Dfunction}
+processElection <- function(info)
+{
+  title <- paste0("Kansas ", info$ELECTION_NAME, " Election ", info$ELECTION_DATE)    
+  
+  OUTPUT_DIR <- paste0("./", info$ELECTION_DATE)      
+
+  rmarkdown::render(
+                     "Statewide-Normalized-Turnout-Template.Rmd",
+                     output_format = html_document(theme      = "cerulean",
+                                                   toc        = TRUE,
+                                                   toc_format = TRUE,
+                                                   toc_float  = TRUE,
+                                                   number_sections = TRUE,
+                                                   code_folding = "hide"),
+
+                     output_file = paste0(info$ELECTION_DATE, 
+                                          "-Statewide-Normalized-Turnout.html"),
+                     output_dir        = OUTPUT_DIR,
+
+                     quiet  = TRUE,
+                     params = list(
+                                    ReportTitle     = title,
+                                    ElectionDate    = info$ELECTION_DATE,
+                                    ElectionName    = info$ELECTION_NAME,
+                                    AfterFileDate   = info$AFTER_FILE_DATE,
+                                    HistoryIndex    = info$HISTORY_INDEX
+                                  )
+                   )
+
+  # Add election name to all graphics files
+  listFiles <- dir(path = ".", 
+                   pattern = "^.*\\.png$|Voter.*\\.xlsx$")
+  newNames <- paste0(info$ELECTION_DATE, "-", listFiles)
+  file.rename(listFiles, newNames)
+
+  #Brute force to get all files into `output_dir`
+  listFiles <- dir(path = ".", 
+                   pattern = "^.*\\.png$|Voter.*\\.xlsx$")
+  file.copy(listFiles, OUTPUT_DIR, copy.date = TRUE)
+  file.remove(listFiles)   
+  
+  invisible()
+}
+```
+
+# Process All Elections
+
+For now, don't bother with parallelizing this.  Markdown writes several files to the same working directory and that's a bit of pain to fix.
+
+```{r Dprocess}
+system.time(
+             for (electionIndex in 1:nrow(metadata))
+             {
+               info <- metadata %>% slice(electionIndex)
+               cat(info$ELECTION_NAME, as.character(info$ELECTION_DATE), "\n")
+               processElection(info)
+             }
+           )
+```
+
+# Fini {.tabset .tabset-fade .tabset-pills}
+
+## {.active}
+
+## Session Info
+
+```{r DSessionInfo}
+sessionInfo()
+```
+
+</div>
+
+```{r DThatsAllDriver, echo = FALSE}
+time.2 <- Sys.time()
+processingTime <- paste("Processing time:", sprintf("%.1f",
+                        as.numeric(difftime(time.2,
+                                            time.1, units="secs"))), "secs\n")
+```
+
+`r processingTime`
+`r format(time.2, "%Y-%m-%d %H%M")`
+

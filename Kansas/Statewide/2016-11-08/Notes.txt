@@ -1,0 +1,3 @@
+Files deleted in public version to protect voter identities:
+2016-11-08-Too-Old-Voters-Kansas.xlsx
+2016-11-08-Too-Young-Voters-Kansas.xlsx
